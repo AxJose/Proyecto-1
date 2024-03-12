@@ -1,0 +1,1438 @@
+;
+; Programación de Microcontroladores
+; Proyecto1.asm
+;
+; Created: 19/02/2024 16:51:25
+; Author : Adrián Pascual
+;
+;****************************************************************
+// Encabezado
+;****************************************************************
+
+.include "M328PDEF.inc"
+.cseg
+
+.org 0x000
+	JMP MAIN	// Vector RESET
+.org 0x0008		// Vector de ISR: PCINT0
+	JMP ISR_PCINT0
+.org 0x0020
+	JMP	ISR_TIMER0_OVF // Vector de ISR: TIMER0
+
+MAIN:
+;****************************************************************
+// STACK
+;****************************************************************
+
+	LDI R16, LOW(RAMEND)
+	OUT SPL, R16
+	LDI R17, HIGH(RAMEND)
+	OUT SPH, R17
+
+;****************************************************************
+// CONFIGURACIÓN
+;****************************************************************
+// Tabla de Valores		0b0gfe_dcba
+	TABLA7SEG: .DB 0b0011_1111, 0b0000_0110 , 0b0101_1011, 0b0100_1111, 0b0110_0110, 0b0110_1101, 0b0111_1101, 0b0000_0111, 0b0111_1111, 0b0110_0111 
+;						#0			#1  			#2			#3			#4				#5			 #6			#7	 		 #8 			#9			
+;*****************************************************************
+
+SETUP:
+
+	LDI R16, (1 << CLKPCE)
+	STS CLKPR, R16			; Habilitar el prescaler
+
+	LDI R16, 0b0000_0100
+	STS CLKPR, R16			; Prescaler de 1MHz
+
+	CALL Init_T0            ; Inicializar el Timer 0
+	;********************************************************************************
+	LDI R16, 0b1111_1100		
+	OUT DDRB, R16		// Habilitar puerto B como entrada (PB0 y PB1)
+
+	LDI R16, 0b0000_0000
+	OUT PORTB, R16		// Habilitar Pull-ups del puerto B 
+	;********************************************************************************
+	LDI R16, (1 << PCIE1)
+	STS PCICR, R16		// Confugración de PCINT0 en flanco de subida y bajada
+	LDI R16, (1 << PCINT12) | (1 << PCINT13)
+	STS PCMSK1, R16		// Habilitar ISR PCINT 0 y 1
+	;********************************************************************************
+	LDI R16, 0xFF
+	OUT DDRD, R16		// Habilitar como salida el puerto D
+	;********************************************************************************
+	LDI R16, 0b0000_1111
+	OUT DDRC, R16		// Habilitar puerto C como salida
+
+	LDI R16, 0b1100_0000
+	OUT PORTC, R16		// Pull ups del puerto C
+	;********************************************************************************
+	LDI R17, 0x00								; Inicializar contador de 4 bits
+	OUT PORTD, R17
+	STS UCSR0B, R17
+
+
+	SEI		// Habilitar las interrupciones Globales GIE
+
+	LDI ZL, 0
+	LDI R26, 0b0000_0000
+	
+	LDI R17, 0x05		; Contador de los segundos
+	LDI R18, 0x05		; Contador de las decenas de segundos
+	// El reloj iniciará con 55 segundos 
+// CONTADOR HORAS Y MINUTOS (Registros que se modifican con los botones)
+	LDI R19, 0x09		; Iniciar contador en 9 (Display1)
+	LDI R20, 0x05		; Iniciar contador en 5 (Display2)
+
+	LDI R21, 0x03		; Iniciar contador en 3 (Display3)
+	LDI R22, 0x02		; Iniciar contador en 2 (Display4)
+	// En los 4 displays se va a mostrar "23:59" únicamente para inicializar 
+	LDI R24, 23 ; Este siempre debe coincidir con las horas
+	// La hora inicial sería "23:59.55" para que luego de los 5 segundos se pase a las "00:00"
+	; Registros para inicializar la fecha
+	LDI R29, 1
+	MOV R14, R29 // Días
+	MOV R15, R29 // Meses
+	MOV R1, R29
+	MOV R3, R29
+	MOV R2, R26
+	MOV R4, R26
+	; Registros para inicializar la alarma
+	MOV R5, R26 // Minutos
+	MOV R6, R26 // Decenas de minutos
+	MOV R7, R26	// Horas
+	MOV R8, R26	// Decenas de horas
+	MOV R10, R29 // Alarma encendida o apagada ( 1 o 0)
+	MOV R12, R26 // Registro para modificar velocidad de la alarma
+	MOV R13, R26 // Total de horas en la alarma (0 - 24)hrs
+
+	LDI R25, 0b0000_0000 // Inicializar registro temporal para saber si se presiona algún botón de la interrupción
+
+;********************************************************************************
+; ESTADO PRINCIPAL (HORAS)
+;********************************************************************************
+LOOP:
+	
+	MOV R29, R10
+	CPI R29, 1
+	BRNE VERIFICAR_ESTADO	
+	CALL REVISAR_ALARMA	// Si el R10 está activado, comparar si las horas coinciden, sino coinciden regresa acá
+
+VERIFICAR_ESTADO:
+// Verificar estado actual
+	LDI R16, 0
+	OUT PORTC, R16
+
+	CPI R26, 1
+	BREQ ESTADO_1
+	CPI R26, 2
+	BREQ ESTADO_2
+	CPI R26, 3
+	BREQ ESTADO_3
+	CPI R26, 4
+	BREQ ESTADO_4
+	CPI R26, 5
+	BREQ ESTADO_5
+	CPI R26, 6
+	BREQ ESTADO_6
+	CPI R26, 7
+	BREQ ESTADO_7
+	CPI R26, 8
+	BREQ ESTADO_8
+
+	RJMP ESTADO_0		// Estado actual
+
+	ESTADO_1:
+		RJMP LOOP_CM	// Saltar a cambio de minutos
+	ESTADO_2:
+		RJMP LOOP_CH	// Saltar a cambio de horas
+	ESTADO_3:
+		RJMP LOOP_F		// Saltar a mostrar fecha
+	ESTADO_4:
+		RJMP LOOP_FM	// Saltar a cambio de mes
+	ESTADO_5:
+		RJMP LOOP_FD	// Saltar a cambio de día
+	ESTADO_6:
+		RJMP LOOP_AM	// Saltar cambio de minutos en alarma
+	ESTADO_7:
+		RJMP LOOP_AH	// Saltar a cambio de horas en alarma
+	ESTADO_8:
+		RJMP ALARMA		// Saltar a activar o desactivar alarma
+
+ESTADO_0:
+	OUT PORTC, R26		// Mostrar el contador en los LEDS
+	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
+	OR R16, R28
+	LDI R23, 0x00
+	; Mostrar el valor en los Displays
+// DISPLAY DE MINUTOS
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R19
+	LPM R23, Z
+	
+	OR R23, R28
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+// DISPLAY DE LAS DECENAS DE MINUTOS
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R20
+	LPM R23, Z
+	
+	OR R23, R28
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+// DISPLAY DE LAS HORAS
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R21
+	LPM R23, Z
+	
+	OR R23, R28
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+// DISPLAY DECENAS DE HORAS
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R22
+	LPM R23, Z
+	
+	OR R23, R28
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+	RJMP LOOP	// Bucle principal
+
+;****************************************************************
+; ESTADO CAMBIO DE MINUTOS
+;****************************************************************
+
+LOOP_CM:
+	LDI R29, 0b0000_0001
+	OUT PORTC, R29
+	// Verificar estado actual
+	CPI R26, 1
+	BREQ CONTINUAR_S1	// Continuar en el estado actual (Estado 1)
+	RJMP LOOP			// Regresar al estado 0
+
+CONTINUAR_S1:
+
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MINUTOS	// Incrementar si se presiona el botón (PB0)
+	SBRS R16, PB1
+	RJMP DEC_MINUTOS	// Decrementar si se presiona el botón (PB1)
+	RJMP INICIO
+INC_MINUTOS:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MINUTOS
+	CLR R17		// Reiniciar los segundos
+	CLR R18		// Reiniciar las decenas de segundos
+	INC R19		// Incrementar el registro de los minutos
+	CPI R19, 10 
+	BREQ OVER_MINUTOS // Si al compararlo con 10 es igual, entonces que haga el overflow de los minutos
+	RJMP INICIO
+
+OVER_MINUTOS:
+	CLR R19		// Limpiar el registro de los minutos
+	INC R20		// Incrementar el registro de las decenas de minutos
+	CPI R20, 6
+	BRNE INICIO
+	RJMP RESET_OVER	// Si al comparar las decenas de minutos es igual, entonces que haga un reset del overflow
+
+DEC_MINUTOS:
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_MINUTOS
+	CLR R17		// Reiniciar los segundos
+	CLR R18		// Reiniciar las decenas de segundos
+	DEC R19		// Decrementar minutos
+	CPI R19, 0xFF
+	BREQ UNDER_MINUTOS	// Hacer underflow de los minutos cuando llegue a 0
+	RJMP INICIO
+
+UNDER_MINUTOS:
+	LDI R19, 9	// Asignarle el 9 a los minutos
+	DEC R20		// Decrementar las decenas de minutos
+	CPI R20, 0xFF
+	BRNE INICIO
+	RJMP RESET_UNDER	// Resetear el underflow cuando llegue a 0
+	 
+RESET_OVER:
+	CLR R20
+	RJMP INICIO
+
+RESET_UNDER:
+	LDI R20, 5
+
+INICIO:
+	// Mostrar el valor de los minutos y decenas de minutos
+	LDI R16, 0x00
+	LDI R23, 0x00
+	OUT PORTD, R23
+	OUT PORTB, R23
+	// DISPLAY 1
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R19
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 2
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R20
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+RJMP LOOP_CM
+
+;****************************************************************
+; ESTADO CAMBIO DE HORAS
+;****************************************************************
+
+LOOP_CH:
+	LDI R29, 0b0000_0001
+	OUT PORTC, R29
+// Verificar estado actual
+	CPI R26, 2
+	BREQ CONTINUAR_S2	// Continuar en el estado actual (Estado 2)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S2:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_HORAS
+	SBRS R16, PB1
+	RJMP DEC_HORAS
+	RJMP INICIO_H
+
+INC_HORAS:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_HORAS
+	CPI R24, 23
+	BREQ RESET_OVER_H
+	INC R24		// Incrementar contador general de horas (0 - 24)
+	CLR R17		// Reiniciar los segundos
+	CLR R18		// Reiniciar las decenas de segundos
+	INC R21		// Incrementar las horas
+	CPI R21, 10
+	BREQ OVER_HORAS // Ir a realizar overflow de horas
+	RJMP INICIO_H
+
+OVER_HORAS:
+	CLR R21	// Resetear las horas
+	INC R22 // Incrementar las decenas de horas
+	BRNE INICIO_H
+	RJMP RESET_OVER_H
+
+DEC_HORAS:
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_HORAS
+	CPI R24, 0xFF
+	BREQ RESET_UNDER_H
+	CLR R17		// Reiniciar los segundos
+	CLR R18		// Reiniciar las decenas de segundos
+	DEC R24		// Decrementar contador general de las horas
+	DEC R21		// Decrementar decenas de minutos
+	CPI R21, 0xFF
+	BREQ UNDER_HORAS // Realizar underflow de las horas
+	RJMP INICIO_H
+
+UNDER_HORAS:
+	LDI R21, 9
+	DEC R22
+	CPI R24, 0xFF
+	BRNE INICIO_H
+	RJMP RESET_UNDER_H
+	 
+RESET_OVER_H:
+	CLR R21
+	CLR R22
+	CLR R24
+	RJMP INICIO_H
+
+RESET_UNDER_H:
+	LDI R22, 2
+	LDI R21, 3
+	LDI R24, 23
+
+INICIO_H:
+	// Mostrar el valor de las horas 
+	LDI R16, 0x00
+	LDI R23, 0x00
+	OUT PORTD, R23
+	OUT PORTB, R23
+	// DISPLAY 3
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R21
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 4
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R22
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+RJMP LOOP_CH
+
+;****************************************************************
+; ESTADO MOSTRAR FECHA
+;****************************************************************
+
+LOOP_F:
+	LDI R29, 0b0000_0010
+	OUT PORTC, R29
+// Verificar estado actual
+	CPI R26, 3
+	BREQ CONTINUAR_S3	// Continuar en el estado actual (Estado 3)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S3:
+	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
+
+// DISPLAY 1
+	CLR ZL
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R1
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 2
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R2
+	LPM R23, Z
+
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+	
+// DISPLAY 3
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R3
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+// DISPLAY 4
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R4
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+
+RJMP LOOP_F
+
+;****************************************************************
+; ESTADO CAMBIAR MESES
+;****************************************************************
+
+LOOP_FM:
+	LDI R29, 0b0000_0010
+	OUT PORTC, R29
+// Verificar estado actual
+	CPI R26, 4
+	BREQ CONTINUAR_S4	// Continuar en el estado actual (Estado 4)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S4:
+
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MES
+	SBRS R16, PB1
+	RJMP DEC_MES
+	RJMP EXIT
+
+INC_MES:	// Inccrementar el mes (1 - 12)
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MES
+	INC R1
+	INC R15
+	MOV R29, R15
+	CPI R29, 13
+	BREQ RESET_OVER_MES
+	MOV R29, R1
+	CPI R29, 10
+	BREQ OVER_MES
+	RJMP EXIT
+
+OVER_MES:	// Overflow de los meses 
+	CLR R1
+	INC R2
+	MOV R29, R2
+	CPI R29, 2
+	BRNE EXIT
+	RJMP RESET_OVER_MES
+
+DEC_MES:	// Decrementar los meses
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_MES
+	DEC R15
+	MOV R29, R15
+	CPI R29, 0x00
+	BREQ RESET_UNDER_MES
+	DEC R1
+	MOV R29, R1
+	CPI R29, 0x00
+	BREQ UNDER_MES
+	RJMP EXIT
+
+UNDER_MES:	// Realizar underflow de los meses
+	LDI R29, 9
+	MOV R1, R29
+	DEC R2
+	MOV R29, R2
+	CPI R29, 0xFF
+	BRNE EXIT
+	RJMP RESET_UNDER_MES
+	 
+RESET_OVER_MES: // Resetear el overflow ("Decenas de meses") ya que se utilizan dos registros ya que son dos dígitos
+	LDI R29, 1
+	MOV R1, R29
+	CLR R2
+	MOV R15, R29
+	RJMP EXIT
+
+RESET_UNDER_MES: // Resetear el underflow ("Decenas de meses") 
+	LDI R29, 1
+	MOV R2, R29
+	LDI R29, 2
+	MOV R1, R29
+	LDI R29, 12
+	MOV R15, R29
+
+EXIT:
+	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
+
+// DISPLAY 1
+	CLR ZL
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R1
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 2
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R2
+	LPM R23, Z
+
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+RJMP LOOP_FM
+
+;****************************************************************
+; ESTADO CAMBIAR DIAS
+;****************************************************************
+
+LOOP_FD:
+	LDI R29, 0b0000_0010
+	OUT PORTC, R29
+// Verificar estado actual
+	CPI R26, 5
+	BREQ CONTINUAR_S5	// Continuar en el estado actual (Estado 5)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S5:
+	
+	MOV R31, R15
+	// VERIFICAR SI ES UN MES DE 29, 30 O 31 DÍAS
+
+	CPI R31, 1 // Enero 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 2 // Febrero 29 días
+	BREQ SET_FEBRERO
+	CPI R31, 3 // Marzo 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 4 // Abril 30 días
+	BREQ SET_TREINTA
+	CPI R31, 5 // Mayo 31 días 
+	BREQ SET_TREINTA_UNO
+	CPI R31, 6 // Junio 30 días
+	BREQ SET_TREINTA
+	CPI R31, 7 // Julio 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 8 // Agosto 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 9 // Septiembre 30 días
+	BREQ SET_TREINTA
+	CPI R31, 10 // Octubre 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 11 // Noviembre 30 días
+	BREQ SET_TREINTA
+	CPI R31, 12 // Diciembre 31 días
+	BREQ SET_TREINTA_UNO
+
+	// SETEAR QUE TIPO DE MES ES
+	SET_TREINTA_UNO:
+		LDI R31, 1
+		RJMP INICIAR
+	SET_FEBRERO:
+		LDI R31, 2
+		RJMP INICIAR
+	SET_TREINTA:
+		LDI R31, 3
+
+INICIAR:
+
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_DIA
+	SBRS R16, PB1
+	RJMP DEC_DIA
+	RJMP SHOW_DIAS
+
+INC_DIA:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_DIA
+	INC R3
+	INC R14
+
+	CPI R31, 1
+	BREQ TREINTA_UNO	// Hace referencia a todos los meses de 31 días
+	CPI R31, 2
+	BREQ FEBRERO	// 29 días
+	CPI R31, 3
+	BREQ TREINTA	// Hace referencia a todos los meses de 30 días
+
+	TREINTA_UNO:
+	MOV R29, R14
+	CPI R29, 32 // Meses de 31 días
+	BREQ RESET_OVER_DIA
+	RJMP NEXT
+
+	FEBRERO:
+	MOV R29, R14
+	CPI R29, 30 // 29 días
+	BRSH RESET_OVER_DIA
+	RJMP NEXT
+
+	TREINTA:
+	MOV R29, R14
+	CPI R29, 31 // Meses de 30 días
+	BREQ RESET_OVER_DIA
+
+NEXT:
+	MOV R29, R3
+	CPI R29, 10
+	BREQ OVER_DIA
+	RJMP SHOW_DIAS
+
+OVER_DIA:	// Overflow de los días
+	CLR R3
+	INC R4
+	INC R14
+	CPI R31, 1
+	BREQ RESET_OVER_DIA31
+	CPI R31, 2
+	BREQ RESET_OVER_DIA29
+	CPI R31, 3
+	BREQ RESET_OVER_DIA30
+
+DEC_DIA:
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_DIA
+	DEC R14
+	MOV R29, R14
+	CPI R29, 0x00
+	BREQ RESETEAR
+	MOV R29, R3
+	CPI R29, 0x00
+	BREQ UNDER_DIA
+	DEC R3
+	RJMP SHOW_DIAS
+
+UNDER_DIA:	// Underflow de los días
+	LDI R29, 9
+	MOV R3, R29
+	DEC R14
+	DEC R4
+	MOV R29, R14
+	CPI R29, 0x00
+	BRNE SHOW_DIAS
+
+RESETEAR:		// Hacer un underflow, pero revisar primero a que valor debe llegar (29, 30 o 31)
+	CPI R31, 1
+	BREQ RESET_UNDER_DIA31
+	CPI R31, 2
+	BREQ RESET_UNDER_DIA29
+	CPI R31, 3
+	BREQ RESET_UNDER_DIA30
+
+RESET_OVER_DIA31:	// OVERFLOW MESES DE 31 DÍAS
+	MOV R29, R14
+	CPI R29, 32
+	BRSH RESET_OVER_DIA
+	RJMP MOSTRAR_DIAS
+
+RESET_OVER_DIA29:	// OVERFLOW MESES DE 29 DÍAS
+	MOV R29, R14
+	CPI R29, 30
+	BRSH RESET_OVER_DIA
+	RJMP MOSTRAR_DIAS
+
+RESET_OVER_DIA30:	// OVERFLOW MESES DE 30 DÍAS
+	MOV R29, R14
+	CPI R29, 31
+	BRSH RESET_OVER_DIA
+	RJMP MOSTRAR_DIAS
+
+RESET_OVER_DIA: // OVERFLOW 
+	LDI R29, 1
+	MOV R3, R29
+	CLR R4
+	MOV R14, R29
+	RJMP MOSTRAR_DIAS
+
+RESET_UNDER_DIA31: // UNDERFLOW MESES DE 31 DÍAS
+	LDI R29, 3
+	MOV R4, R29
+	LDI R29, 1
+	MOV R3, R29
+	LDI R29, 31
+	MOV R14, R29
+	RJMP MOSTRAR_DIAS
+
+RESET_UNDER_DIA29: // UNDERFLOW MESES DE 29 DÍAS
+	LDI R29, 2
+	MOV R4, R29
+	LDI R29, 9
+	MOV R3, R29
+	LDI R29, 29
+	MOV R14, R29
+	RJMP MOSTRAR_DIAS
+
+RESET_UNDER_DIA30: // UNDERFLOW MESES DE 30 DÍAS
+	LDI R29, 3
+	MOV R4, R29
+	LDI R29, 0
+	MOV R3, R29
+	LDI R29, 30
+	MOV R14, R29
+	RJMP MOSTRAR_DIAS
+
+SHOW_DIAS: // Si no se presionar ningún botón (INC o DEC) pasa por acá para verificar que los días coincidan con cada mes
+	CPI R31, 1
+	BREQ RESET_OVER_DIA31
+	CPI R31, 2
+	BREQ RESET_OVER_DIA29
+	CPI R31, 3
+	BREQ RESET_OVER_DIA30
+	
+MOSTRAR_DIAS:	// Mostrar los días en los displays
+	LDI R16, 0
+	LDI R23, 0
+	// DISPLAY 3
+	CLR ZL
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R3
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 4
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R4
+	LPM R23, Z
+
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+	
+RJMP LOOP_FD
+
+;****************************************************************
+; ESTADO CONFIGURAR ALARMA (MINUTOS)
+;****************************************************************
+
+LOOP_AM:
+// Verificar estado actual
+	LDI R29, 0b0000_0100
+	OUT PORTC, R29
+	CPI R26, 6
+	BREQ CONTINUAR_S6	// Continuar en el estado actual (Estado 6)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S6:
+
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MINUTOS_AM
+	SBRS R16, PB1
+	RJMP DEC_MINUTOS_AM
+	RJMP INICIO_AM
+
+INC_MINUTOS_AM:	// Incrementar los minutos de la alarma
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_MINUTOS_AM
+	INC R5
+	MOV R29, R5
+	CPI R29, 10
+	BREQ OVER_MINUTOS_AM
+	RJMP INICIO_AM
+
+OVER_MINUTOS_AM: // Overflow de los minutos 
+	CLR R5
+	INC R6
+	MOV R29, R6
+	CPI R29, 6
+	BRNE INICIO_AM
+	RJMP RESET_OVER_AM
+
+DEC_MINUTOS_AM:	// Decrementar los minutos de la alarma
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_MINUTOS_AM
+	DEC R5
+	MOV R29, R5
+	CPI R29, 0xFF
+	BREQ UNDER_MINUTOS_AM
+	RJMP INICIO_AM
+
+UNDER_MINUTOS_AM: // Underflow de los minutos
+	LDI R29, 9
+	MOV R5, R29
+	DEC R6
+	MOV R29, R6
+	CPI R29, 0xFF
+	BRNE INICIO_AM
+	RJMP RESET_UNDER_AM
+	 
+RESET_OVER_AM:	// Resetear el overflow de los minutos (Colocar en 0)
+	CLR R6
+	RJMP INICIO_AM
+
+RESET_UNDER_AM:	// Resetear el underflow de los minutos (Colocar en 59)
+	LDI R29, 5
+	MOV R6, R29
+	LDI R29, 9
+	MOV R5, R29
+
+INICIO_AM:	// Mostrar los minutos en los displays
+
+	LDI R16, 0x00
+	LDI R23, 0x00
+	OUT PORTD, R23
+	OUT PORTB, R23
+	// DISPLAY 1
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R5
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 2
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R6
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+RJMP LOOP_AM
+
+;****************************************************************
+; ESTADO CONFIGURAR ALARMA (HORAS)
+;****************************************************************
+
+LOOP_AH:
+	LDI R29, 0b0000_0100
+	OUT PORTC, R29
+// Verificar estado actual
+	CPI R26, 7
+	BREQ CONTINUAR_S7	// Continuar en el estado actual (Estado 6)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S7:
+
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_HORAS_AH
+	SBRS R16, PB1
+	RJMP DEC_HORAS_AH
+	RJMP INICIO_AH
+
+INC_HORAS_AH:	// Incrementar las horas de la alarma
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP INC_HORAS_AH
+	MOV R29, R13
+	CPI R29, 23
+	BREQ RESET_OVER_AH
+	INC R13
+	INC R7
+	MOV R29, R7
+	CPI R29, 10
+	BREQ OVER_HORAS_AH
+	RJMP INICIO_AH
+
+OVER_HORAS_AH:	// Overflow de las horas
+	CLR R7
+	INC R8
+	BRNE INICIO_AH
+	RJMP RESET_OVER_AH
+
+DEC_HORAS_AH:	// Decrementar las horas de la alarma
+	IN R16, PINB
+	SBRS R16, PB1
+	RJMP DEC_HORAS_AH
+	MOV R29, R13
+	CPI R29, 0xFF
+	BREQ RESET_UNDER_AH
+	DEC R13
+	DEC R7
+	MOV R29, R7
+	CPI R29, 0xFF
+	BREQ UNDER_HORAS_AH
+	RJMP INICIO_AH
+
+UNDER_HORAS_AH:	// Underflow de las horas
+	LDI R29, 9
+	MOV R7, R29
+	DEC R8
+	MOV R29, R13
+	CPI R29, 0xFF
+	BRNE INICIO_AH
+	RJMP RESET_UNDER_AH
+	 
+RESET_OVER_AH:	// Colocar en 0 las horas
+	CLR R7
+	CLR R8
+	CLR R13
+	RJMP INICIO_AH
+
+RESET_UNDER_AH:	// Colocar en 23 las horas (underflow)
+	LDI R29, 2
+	MOV R8, R29
+	LDI R29, 3
+	MOV R7, R29
+	LDI R29, 23
+	MOV R13, R29
+
+INICIO_AH:	// Mostrar las horas en los displays
+
+	LDI R16, 0x00
+	LDI R23, 0x00
+	OUT PORTD, R23
+	OUT PORTB, R23
+	// DISPLAY 3
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R7
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 4
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R8
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+RJMP LOOP_AH
+
+;****************************************************************
+; MODO PARA DESACTIVAR LA ALARMA 
+;****************************************************************
+
+ALARMA:
+// Verificar estado actual
+	CPI R26, 8
+	BREQ CONTINUAR_S8	// Continuar en el estado actual (Estado 8)
+	RJMP LOOP	// Regresar al estado principal (Estado 0)
+
+CONTINUAR_S8:
+	MOV R29, R10
+	CPI R29, 1
+	BREQ MOSTRAR_ALARMA // Mostrar si está activada o no
+	RJMP VERIFICAR_PB		//	Verificar si se está presionando algún botón (PB0 o PB1)
+
+MOSTRAR_ALARMA:
+	LDI R29, 0b0000_0111	
+	OUT PORTC, R29
+VERIFICAR_PB:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP KEEP_ALARMA
+	SBRS R16, PB1
+	RJMP RESET_ALARMA
+	RJMP ESTADO_ALARMA
+
+KEEP_ALARMA:		// Encender los LEDS que indican si se quiere hacer sonar la alarma
+	LDI R29, 0b0000_0111
+	OUT PORTC, R29
+	LDI R29, 1
+	MOV R10, R29
+	RJMP ESTADO_ALARMA
+
+RESET_ALARMA:
+	CLR R10
+	OUT PORTC, R10
+	
+ESTADO_ALARMA:		// Apagar los LEDS que indican si se quiere hacer sonar la alarma
+	LDI R16, 0x00
+	LDI R23, 0x00
+	OUT PORTD, R23
+	OUT PORTB, R23
+// DISPLAY 1
+	SBI PINB, PB2		// Encender PB2
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R5
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB2		// Apagar PB2
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 2
+	SBI PINB, PB3		// Encender PB3
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R6
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB3		// Apagar PB3
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 3
+	SBI PINB, PB4		// Encender PB4
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R7
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB4		// Apagar PB4
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+// DISPLAY 4
+	SBI PINB, PB5		// Encender PB5
+	LDI ZH, HIGH(TABLA7SEG << 1)
+	LDI ZL, LOW(TABLA7SEG << 1)
+	ADD ZL, R8
+	LPM R23, Z
+	
+	OUT PORTD, R23
+	CALL DELAY
+
+    SBI PINB, PB5		// Apagar PB5
+	OUT PORTD, R16	// Limpiar puerto
+	CLR ZL		// Reiniciar la posisión en la tabla
+	LDI R23, 0x00
+
+RJMP ALARMA
+
+;****************************************************************
+// Subrutina para revisar alarma
+;****************************************************************
+
+REVISAR_ALARMA:
+	MOV R29, R13
+	CP R29, R24		// Comparar si las horas coinciden
+	BREQ COMP_DECENAS_M // Si coinciden, entonces comparar las decenas de minutos
+	RET
+COMP_DECENAS_M:
+	MOV R29, R6
+	CP R29, R20		// Comparar las decenas de minutos
+	BREQ COMP_MINUTOS	// Si coinciden, comparar los minutos
+	RET
+COMP_MINUTOS:
+	MOV R29, R5
+	CP R29, R19		// Comparar los minutos
+	BREQ SONAR_ALARMA	// Si coincide, que suene la alarma
+	RET
+SONAR_ALARMA:
+	CLR R12		// Limpia el registro con el cual se modifica a la velocidad que suena la alarma
+	IN R16, PINB
+	SBRS R16, PB0	// Si se preciona cualquiera de los botones del puerto B, apagar la alarma
+	RJMP APAGAR_ALARMA
+	SBRS R16, PB1
+	RJMP APAGAR_ALARMA
+	
+	RITMO:
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP APAGAR_ALARMA
+	SBRS R16, PB1
+	RJMP APAGAR_ALARMA
+	MOV R29, R12	// Comparar con el registro con el cual se ajusta la velocidad de la que se quiere hacer sonar (R12)
+	CPI R29, 1		
+	BRNE RITMO
+	RITMO_UNO:	// Entra luego de 100ms
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP APAGAR_ALARMA
+	SBRS R16, PB1
+	RJMP APAGAR_ALARMA
+	LDI R29, 0b0000_1111 // Encender los LEDS y activar la alarma
+	OUT PORTC, R29
+	MOV R29, R12
+	CPI R29, 20
+	BRNE RITMO_UNO
+	RITMO_DOS:	// Entra luego de 200ms
+	IN R16, PINB
+	SBRS R16, PB0
+	RJMP APAGAR_ALARMA
+	SBRS R16, PB1
+	RJMP APAGAR_ALARMA
+	LDI R29, 0b0000_0000 // Apagar los LEDS y la alarma
+	OUT PORTC, R29
+	MOV R29, R12
+	CPI R29, 30
+	BRNE RITMO_DOS	// Sale luego de 300ms
+	RJMP SONAR_ALARMA	// Seguir con el patrón (Apagar y encender)
+	
+APAGAR_ALARMA:
+	LDI R29, 0
+	OUT PORTC, R29	// Apagar los LEDSA y desactivar alarma
+	CLR R10
+	RET
+
+;****************************************************************
+// Subrutina para DELAY
+;****************************************************************
+
+DELAY:
+	LDI R29, 255
+	LDI R25, 0
+LOOP_DELAY:
+	DEC R29
+	CPI R29, 0
+	BRNE LOOP_DELAY
+	LDI R29, 1
+	INC R25
+	CPI R25, 255
+	BRNE LOOP_DELAY
+	RET
+	
+
+;****************************************************************
+// Subrutina de ISR PCINT0
+;****************************************************************
+
+ISR_PCINT0:
+	PUSH R16	// Guardamos en pila el registro R16
+	PUSH R17
+	PUSH R18
+	IN R16, SREG
+	PUSH R16	// Guardamos en pila el registro SREG
+
+	IN R25, PINC
+	SBRS R25, PC4
+	RJMP INC_MODO
+	SBRS R25, PC5
+	RJMP DEC_MODO
+	RJMP SALIDA
+
+INC_MODO:
+	SBRS R25, PC4
+	INC R26			// Incrementar contador mostrado en los LEDS
+	CPI R26, 9
+	BREQ RESET_MODO	// Regresar a 0 si se intenta aumentar cuando ya está en 15
+	RJMP SALIDA
+
+DEC_MODO:
+	SBRS R25, PC5
+	DEC R26			// Decrementar contador mostrado en los LEDS
+	CPI R26, 0xFF
+	BREQ SET_MODO // SETEAR EN 8
+	RJMP SALIDA
+
+
+RESET_MODO:
+	CLR R26
+	RJMP SALIDA
+
+SET_MODO:
+	LDI R26, 8
+
+SALIDA:
+	SBI PCIFR, PCIF1	; Apagar la bandera de ISR PCINT0
+
+	POP R16			// Obtener el valor de SREG
+	OUT	SREG, R16	// Restaurar los antiguos valores de SREG
+	POP R18
+	POP R17
+	POP R16			// Obetener el valor de R16
+	RETI			// Retornamos de la ISR
+;****************************************************************
+// Subrutina de ISR TIMER_OVF
+;****************************************************************
+
+ISR_TIMER0_OVF:
+
+	PUSH R16	// Guardamos en pila el registro R16
+	IN R16, SREG
+	PUSH R16	// Guardamos en pila el registro SREG
+
+	INC R12
+	INC R27
+	CPI R27, 50
+	BREQ LEDS
+	CPI R27, 100
+	BRNE SEGUNDOS
+LEDS:
+	IN R16, PIND
+	SBRS R16, PD7
+	RJMP SETEAR
+
+  CLEAR:
+	CLR R28
+	RJMP SEGUNDOS
+  
+  SETEAR:
+	LDI R28, 0b1000_0000
+
+SEGUNDOS:
+	CPI R27, 100
+	BRNE SALIR
+	
+	INC R17		// Incrementa los segundos 
+	CLR R27
+
+    CPI R17, 10 
+	BREQ RESET_SEGUNDOS
+	RJMP SALIR
+
+RESET_SEGUNDOS:
+	
+	CLR R17		// Reiniciar el contador de segundos
+    INC R18		// Contador de decenas de segundos
+	CPI R18, 6
+	BREQ MINUTOS
+	RJMP SALIR
+
+MINUTOS:
+	CLR R18	// Reiniciar las decenas de segundos
+	INC R19	// Incrementar los minutos
+	CPI R19, 10
+	BREQ RESET_MINUTOS
+	RJMP SALIR
+
+RESET_MINUTOS:
+	CLR R19	// Reiniciar los minutos
+	INC R20	// Incrementar las decenas de minutos
+	CPI R20, 6
+	BRNE SALIR
+	RJMP HORAS
+
+HORAS:
+	CLR R20	// Reiniciar las decenas de minutos
+	INC R24	// Incrementar contador general de las horas
+	CPI R24, 24
+	BREQ RESET_FINAL
+	INC R21	// Incrementar las horas
+	CPI R21, 10
+	BREQ RESET_HORAS
+	RJMP SALIR
+
+RESET_HORAS:
+	CLR R21	// Reiniciar las horas
+	INC R22	// Incrementar las decenas de horas
+	CPI R22, 5
+	BREQ RESET_FINAL
+	RJMP SALIR
+
+RESET_FINAL:
+	CLR R21	// Reiniciar las horas
+	CLR R22 // SE LIMPIA CUANDO LLEGA A 29
+	CLR R24	// Reiniciar contador general de las horas
+	INC R3	// Aumentar el contador de los días una vez cumplida las 24 horas (un día)
+	INC R14	// Incrementar el contador general de los días
+
+SALIR:
+	SBI TIFR0, TOV0		; Reinicia el bit TOV0
+	LDI R16, 217     ; Valor de desbordamiento para 10 ms
+    OUT TCNT0, R16
+	
+	POP R16			// Obtener el valor de SREG
+	OUT	SREG, R16	// Restaurar los antiguos valores de SREG
+	POP R16			// Obetener el valor de R16
+	RETI
+;****************************************************************
+// Subrutina para inicializar el TIMER0
+;****************************************************************
+
+Init_T0:
+	
+	LDI R16, (1 << TOIE0)  ; Habilitar la interrupción de desbordamiento del Timer0
+    STS TIMSK0, R16        ; Escribir al registro TIMSK0
+
+    LDI R16, 0
+    OUT TCCR0A, R16        ; Modo normal 
+
+	LDI R16, 217     ; Valor de desbordamiento para 10 ms
+    OUT TCNT0, R16
+
+    LDI R16, (1 << CS02) | (0 << CS00)    ; Configurar el prescaler a 256
+    OUT TCCR0B, R16
+
+    RET
