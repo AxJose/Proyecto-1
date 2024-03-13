@@ -1,6 +1,6 @@
 ;
 ; Programación de Microcontroladores
-; Proyecto1.asm
+; Proyecto1
 ;
 ; Created: 19/02/2024 16:51:25
 ; Author : Adrián Pascual
@@ -32,7 +32,7 @@ MAIN:
 ;****************************************************************
 // CONFIGURACIÓN
 ;****************************************************************
-// Tabla de Valores		0b0gfe_dcba
+// Tabla de Valores		
 	TABLA7SEG: .DB 0b0011_1111, 0b0000_0110 , 0b0101_1011, 0b0100_1111, 0b0110_0110, 0b0110_1101, 0b0111_1101, 0b0000_0111, 0b0111_1111, 0b0110_0111 
 ;						#0			#1  			#2			#3			#4				#5			 #6			#7	 		 #8 			#9			
 ;*****************************************************************
@@ -43,7 +43,7 @@ SETUP:
 	STS CLKPR, R16			; Habilitar el prescaler
 
 	LDI R16, 0b0000_0100
-	STS CLKPR, R16			; Prescaler de 1MHz
+	STS CLKPR, R16			; Clock division factor de 16, 1MHz
 
 	CALL Init_T0            ; Inicializar el Timer 0
 	;********************************************************************************
@@ -56,7 +56,7 @@ SETUP:
 	LDI R16, (1 << PCIE1)
 	STS PCICR, R16		// Confugración de PCINT0 en flanco de subida y bajada
 	LDI R16, (1 << PCINT12) | (1 << PCINT13)
-	STS PCMSK1, R16		// Habilitar ISR PCINT 0 y 1
+	STS PCMSK1, R16		// Habilitar ISR PCINT PC4 y PC5
 	;********************************************************************************
 	LDI R16, 0xFF
 	OUT DDRD, R16		// Habilitar como salida el puerto D
@@ -93,10 +93,10 @@ SETUP:
 	LDI R29, 1
 	MOV R14, R29 // Días
 	MOV R15, R29 // Meses
-	MOV R1, R29
-	MOV R3, R29
-	MOV R2, R26
-	MOV R4, R26
+	MOV R1, R29	// Unidad de meses	
+	MOV R2, R26	// Decenas de meses
+	MOV R3, R29	// Unidad de días
+	MOV R4, R26 // Decenas de meses
 	; Registros para inicializar la alarma
 	MOV R5, R26 // Minutos
 	MOV R6, R26 // Decenas de minutos
@@ -453,8 +453,62 @@ LOOP_F:
 	RJMP LOOP	// Regresar al estado principal (Estado 0)
 
 CONTINUAR_S3:
-	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
 
+	CALL VERIFICAR_MES
+
+	CPI R31, 1
+	BREQ OVER_DIA31
+	CPI R31, 2
+	BREQ OVER_DIA29
+	CPI R31, 3
+	BREQ OVER_DIA30
+
+	OVER_DIA31:
+		MOV R29, R14
+		CPI R29, 32
+		BRSH INCREMENTAR_MES
+		RJMP MOSTRAR_FECHA
+	OVER_DIA29:
+		MOV R29, R14
+		CPI R29, 30
+		BRSH INCREMENTAR_MES
+		RJMP MOSTRAR_FECHA
+	OVER_DIA30:
+		MOV R29, R14
+		CPI R29, 31
+		BRSH INCREMENTAR_MES
+		RJMP MOSTRAR_FECHA
+
+	INCREMENTAR_MES:
+		LDI R29, 1
+		MOV R3, R29
+		MOV R14, R29
+		CLR R4
+		INC R1
+		INC R15
+		MOV R29, R15
+		CPI R29, 13
+		BREQ RESETEAR_OVERFLOW
+		MOV R29, R1
+		CPI R29, 10
+		BREQ OVERFLOW_MES
+		RJMP MOSTRAR_FECHA
+
+		OVERFLOW_MES:
+		CLR R1
+		INC R2
+		MOV R29, R2
+		CPI R29, 2
+		BREQ RESETEAR_OVERFLOW
+
+		RESETEAR_OVERFLOW:
+		LDI R29, 1
+		MOV R1, R29
+		CLR R2
+		MOV R15, R29
+
+MOSTRAR_FECHA:	
+	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
 // DISPLAY 1
 	CLR ZL
 	SBI PINB, PB2		// Encender PB2
@@ -539,7 +593,7 @@ CONTINUAR_S4:
 	RJMP DEC_MES
 	RJMP EXIT
 
-INC_MES:	// Inccrementar el mes (1 - 12)
+INC_MES:	// Incrementar el mes (1 - 12)
 	IN R16, PINB
 	SBRS R16, PB0
 	RJMP INC_MES
@@ -647,44 +701,7 @@ LOOP_FD:
 	RJMP LOOP	// Regresar al estado principal (Estado 0)
 
 CONTINUAR_S5:
-	
-	MOV R31, R15
-	// VERIFICAR SI ES UN MES DE 29, 30 O 31 DÍAS
-
-	CPI R31, 1 // Enero 31 días
-	BREQ SET_TREINTA_UNO
-	CPI R31, 2 // Febrero 29 días
-	BREQ SET_FEBRERO
-	CPI R31, 3 // Marzo 31 días
-	BREQ SET_TREINTA_UNO
-	CPI R31, 4 // Abril 30 días
-	BREQ SET_TREINTA
-	CPI R31, 5 // Mayo 31 días 
-	BREQ SET_TREINTA_UNO
-	CPI R31, 6 // Junio 30 días
-	BREQ SET_TREINTA
-	CPI R31, 7 // Julio 31 días
-	BREQ SET_TREINTA_UNO
-	CPI R31, 8 // Agosto 31 días
-	BREQ SET_TREINTA_UNO
-	CPI R31, 9 // Septiembre 30 días
-	BREQ SET_TREINTA
-	CPI R31, 10 // Octubre 31 días
-	BREQ SET_TREINTA_UNO
-	CPI R31, 11 // Noviembre 30 días
-	BREQ SET_TREINTA
-	CPI R31, 12 // Diciembre 31 días
-	BREQ SET_TREINTA_UNO
-
-	// SETEAR QUE TIPO DE MES ES
-	SET_TREINTA_UNO:
-		LDI R31, 1
-		RJMP INICIAR
-	SET_FEBRERO:
-		LDI R31, 2
-		RJMP INICIAR
-	SET_TREINTA:
-		LDI R31, 3
+	CALL VERIFICAR_MES
 
 INICIAR:
 
@@ -868,6 +885,50 @@ MOSTRAR_DIAS:	// Mostrar los días en los displays
 	LDI R23, 0x00
 	
 RJMP LOOP_FD
+
+;****************************************************************
+; Subrutina para verificar que tipo de mes es (29, 30 o 31 días)
+;****************************************************************
+
+VERIFICAR_MES:
+	MOV R31, R15
+	// VERIFICAR SI ES UN MES DE 29, 30 O 31 DÍAS
+
+	CPI R31, 1 // Enero 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 2 // Febrero 29 días
+	BREQ SET_FEBRERO
+	CPI R31, 3 // Marzo 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 4 // Abril 30 días
+	BREQ SET_TREINTA
+	CPI R31, 5 // Mayo 31 días 
+	BREQ SET_TREINTA_UNO
+	CPI R31, 6 // Junio 30 días
+	BREQ SET_TREINTA
+	CPI R31, 7 // Julio 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 8 // Agosto 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 9 // Septiembre 30 días
+	BREQ SET_TREINTA
+	CPI R31, 10 // Octubre 31 días
+	BREQ SET_TREINTA_UNO
+	CPI R31, 11 // Noviembre 30 días
+	BREQ SET_TREINTA
+	CPI R31, 12 // Diciembre 31 días
+	BREQ SET_TREINTA_UNO
+
+	// SETEAR QUE TIPO DE MES ES
+	SET_TREINTA_UNO:
+		LDI R31, 1
+		RET
+	SET_FEBRERO:
+		LDI R31, 2
+		RET
+	SET_TREINTA:
+		LDI R31, 3
+		RET
 
 ;****************************************************************
 ; ESTADO CONFIGURAR ALARMA (MINUTOS)
@@ -1211,6 +1272,8 @@ COMP_MINUTOS:
 	RET
 SONAR_ALARMA:
 	CLR R12		// Limpia el registro con el cual se modifica a la velocidad que suena la alarma
+	LDI R29, 0b0000_0000 // Apagar los LEDS y la alarma
+	OUT PORTC, R29
 	IN R16, PINB
 	SBRS R16, PB0	// Si se preciona cualquiera de los botones del puerto B, apagar la alarma
 	RJMP APAGAR_ALARMA
@@ -1224,7 +1287,7 @@ SONAR_ALARMA:
 	SBRS R16, PB1
 	RJMP APAGAR_ALARMA
 	MOV R29, R12	// Comparar con el registro con el cual se ajusta la velocidad de la que se quiere hacer sonar (R12)
-	CPI R29, 1		
+	CPI R29, 10		
 	BRNE RITMO
 	RITMO_UNO:	// Entra luego de 100ms
 	IN R16, PINB
@@ -1235,24 +1298,13 @@ SONAR_ALARMA:
 	LDI R29, 0b0000_1111 // Encender los LEDS y activar la alarma
 	OUT PORTC, R29
 	MOV R29, R12
-	CPI R29, 20
+	CPI R29, 20 // Sale luego de 200ms
 	BRNE RITMO_UNO
-	RITMO_DOS:	// Entra luego de 200ms
-	IN R16, PINB
-	SBRS R16, PB0
-	RJMP APAGAR_ALARMA
-	SBRS R16, PB1
-	RJMP APAGAR_ALARMA
-	LDI R29, 0b0000_0000 // Apagar los LEDS y la alarma
-	OUT PORTC, R29
-	MOV R29, R12
-	CPI R29, 30
-	BRNE RITMO_DOS	// Sale luego de 300ms
 	RJMP SONAR_ALARMA	// Seguir con el patrón (Apagar y encender)
 	
 APAGAR_ALARMA:
 	LDI R29, 0
-	OUT PORTC, R29	// Apagar los LEDSA y desactivar alarma
+	OUT PORTC, R29	// Apagar los LEDS y desactivar alarma
 	CLR R10
 	RET
 
@@ -1272,7 +1324,6 @@ LOOP_DELAY:
 	CPI R25, 255
 	BRNE LOOP_DELAY
 	RET
-	
 
 ;****************************************************************
 // Subrutina de ISR PCINT0
