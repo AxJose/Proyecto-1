@@ -509,6 +509,11 @@ CONTINUAR_S3:
 
 MOSTRAR_FECHA:	
 	LDI R16, 0b0000_0000 // Dejar en 0 para que no se muestren valores repetidos en los Displays
+	MOV R29, R10
+	CPI R29, 1
+	BRNE ESTADO_FECHA	
+	CALL REVISAR_ALARMA	// Si el R10 está activado, comparar si las horas coinciden, sino coinciden regresa acá
+ESTADO_FECHA:
 // DISPLAY 1
 	CLR ZL
 	SBI PINB, PB2		// Encender PB2
